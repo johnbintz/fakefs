@@ -337,7 +337,7 @@ module FakeFS
     end
 
     def flock(locking_constant)
-      raise NotImplementedError
+      #raise NotImplementedError
     end
 
     def mtime
