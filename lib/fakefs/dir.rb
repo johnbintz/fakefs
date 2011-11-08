@@ -2,8 +2,13 @@ module FakeFS
   class Dir
     include Enumerable
 
+    def self._check_for_valid_file(path)
+      raise Errno::ENOENT, "No such file or directory - #{path}" unless FileSystem.find(path)
+    end
+
     def initialize(string)
-      raise Errno::ENOENT, string unless FileSystem.find(string)
+      self.class._check_for_valid_file(string)
+
       @path = string
       @open = true
       @pointer = 0
@@ -52,8 +57,12 @@ module FakeFS
       @contents[integer]
     end
 
-    def self.[](pattern)
-      glob(pattern)
+    def self.[](*pattern)
+      glob pattern
+    end
+
+    def self.exists?(path)
+      File.exists?(path) && File.directory?(path)
     end
 
     def self.chdir(dir, &blk)
@@ -61,16 +70,19 @@ module FakeFS
     end
 
     def self.chroot(string)
-      # Not implemented yet
+      raise NotImplementedError
     end
 
     def self.delete(string)
-      raise SystemCallError, "No such file or directory - #{string}" unless FileSystem.find(string).values.empty?
+      _check_for_valid_file(string)
+      raise Errno::ENOTEMPTY, "Directory not empty - #{string}" unless FileSystem.find(string).values.empty?
+
       FileSystem.delete(string)
     end
 
     def self.entries(dirname)
-      raise SystemCallError, dirname unless FileSystem.find(dirname)
+      _check_for_valid_file(dirname)
+
       Dir.new(dirname).map { |file| File.basename(file) }
     end
 
@@ -79,15 +91,25 @@ module FakeFS
     end
 
     def self.glob(pattern, &block)
-      files = [FileSystem.find(pattern) || []].flatten.map(&:to_s).sort
-      block_given? ? files.each { |file| block.call(file) } : files
+      matches_for_pattern = lambda { |matcher| [FileSystem.find(matcher) || []].flatten.map{|e| e.to_s}.sort  }
+
+      if pattern.is_a? Array
+        files = pattern.collect { |matcher| matches_for_pattern.call matcher }.flatten
+      else
+        files = matches_for_pattern.call pattern
+      end
+      return block_given? ? files.each { |file| block.call(file) } : files
     end
 
     def self.mkdir(string, integer = 0)
       parent = string.split('/')
       parent.pop
-      raise Errno::ENOENT, "No such file or directory - #{string}" unless parent.join == "" || FileSystem.find(parent.join('/'))
+
+      joined_parent_path = parent.join
+
+      _check_for_valid_file(joined_parent_path) unless joined_parent_path == ""
       raise Errno::EEXIST, "File exists - #{string}" if File.exists?(string)
+
       FileUtils.mkdir_p(string)
     end
 
@@ -105,6 +127,52 @@ module FakeFS
 
     def self.pwd
       FileSystem.current_dir.to_s
+    end
+
+    # This code has been borrowed from Rubinius
+    def self.mktmpdir(prefix_suffix = nil, tmpdir = nil)
+      case prefix_suffix
+      when nil
+        prefix = "d"
+        suffix = ""
+      when String
+        prefix = prefix_suffix
+        suffix = ""
+      when Array
+        prefix = prefix_suffix[0]
+        suffix = prefix_suffix[1]
+      else
+        raise ArgumentError, "unexpected prefix_suffix: #{prefix_suffix.inspect}"
+      end
+
+      t = Time.now.strftime("%Y%m%d")
+      n = nil
+
+      begin
+        path = "#{tmpdir}/#{prefix}#{t}-#{$$}-#{rand(0x100000000).to_s(36)}"
+        path << "-#{n}" if n
+        path << suffix
+        mkdir(path, 0700)
+      rescue Errno::EEXIST
+        n ||= 0
+        n += 1
+        retry
+      end
+
+      if block_given?
+        begin
+          yield path
+        ensure
+          require 'fileutils'
+          # This here was using FileUtils.remove_entry_secure instead of just
+          # .rm_r. However, the security concerns that apply to
+          # .rm_r/.remove_entry_secure shouldn't apply to a test fake
+          # filesystem. :^)
+          FileUtils.rm_r path
+        end
+      else
+        path
+      end
     end
 
     class << self

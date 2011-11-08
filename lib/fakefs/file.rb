@@ -37,7 +37,12 @@ module FakeFS
     end
 
     def self.exist?(path)
-      !!FileSystem.find(path)
+      if(File.symlink?(path)) then
+        referent = File.expand_path(File.readlink(path), File.dirname(path))
+        exist?(referent)
+      else
+        !!FileSystem.find(path)
+      end
     end
 
     class << self
@@ -64,9 +69,18 @@ module FakeFS
       end
     end
 
+    def self.atime(path)
+      if exists?(path)
+        FileSystem.find(path).atime
+      else
+        raise Errno::ENOENT
+      end
+    end
+
     def self.utime(atime, mtime, *paths)
       paths.each do |path|
         if exists?(path)
+          FileSystem.find(path).atime = atime
           FileSystem.find(path).mtime = mtime
         else
           raise Errno::ENOENT
@@ -132,12 +146,13 @@ module FakeFS
 
     def self.readlink(path)
       symlink = FileSystem.find(path)
-      FileSystem.find(symlink.target).to_s
+      symlink.target
     end
 
     def self.read(path)
       file = new(path)
       if file.exists?
+        FileSystem.find(path).atime = Time.now
         file.read
       else
         raise Errno::ENOENT
@@ -220,7 +235,7 @@ module FakeFS
     end
 
     class Stat
-      attr_reader :ctime, :mtime
+      attr_reader :ctime, :mtime, :atime
 
       def initialize(file, __lstat = false)
         if !File.exists?(file)
@@ -232,6 +247,7 @@ module FakeFS
         @__lstat   = __lstat
         @ctime     = @fake_file.ctime
         @mtime     = @fake_file.mtime
+        @atime     = @fake_file.atime
       end
 
       def symlink?
@@ -321,7 +337,7 @@ module FakeFS
     end
 
     def atime
-      raise NotImplementedError
+      self.class.atime(@path)
     end
 
     def chmod(mode_int)
@@ -358,7 +374,7 @@ module FakeFS
       end
 
       def to_path
-        raise NotImplementedError
+        @path
       end
     end
 
@@ -398,8 +414,22 @@ module FakeFS
       (@mode & mask) != 0 if @mode.is_a?(Integer)
     end
 
+    # Create a missing file if the path is valid.
+    #
     def create_missing_file
-      if !File.exists?(@path)
+      raise Errno::EISDIR, "Is a directory - #{path}" if File.directory?(@path)
+
+      if !File.exists?(@path) # Unnecessary check, probably.
+        dirname = RealFile.dirname @path
+
+        unless dirname == "."
+          dir = FileSystem.find dirname
+
+          unless dir.kind_of? FakeDir
+            raise Errno::ENOENT, "No such file or directory - #{path}"
+          end
+        end
+
         @file = FileSystem.add(path, FakeFile.new)
       end
     end

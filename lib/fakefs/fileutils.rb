@@ -6,6 +6,7 @@ module FakeFS
       FileSystem.add(path, FakeDir.new)
     end
     alias_method :mkpath, :mkdir_p
+    alias_method :makedirs, :mkdir_p
 
     def mkdir(path)
       parent = path.split('/')
@@ -29,7 +30,7 @@ module FakeFS
 
     def rm(list, options = {})
       Array(list).each do |path|
-        FileSystem.delete(path)
+        FileSystem.delete(path) or raise Errno::ENOENT.new(path)
       end
     end
 
@@ -39,9 +40,17 @@ module FakeFS
 
     def ln_s(target, path, options = {})
       options = { :force => false }.merge(options)
-      (FileSystem.find(path) and !options[:force]) ? raise(Errno::EEXIST, path) : FileSystem.delete(path)
+      (FileSystem.find(path) && !options[:force]) ?
+        raise(Errno::EEXIST, path) :
+        FileSystem.delete(path)
+
+      if !options[:force] && !Dir.exists?(File.dirname(path))
+        raise Errno::ENOENT, path
+      end
+
       FileSystem.add(path, FakeSymlink.new(target))
     end
+
     def ln_sf(target, path)
       ln_s(target, path, { :force => true })
     end
@@ -101,7 +110,7 @@ module FakeFS
           FileSystem.add(dest_path, target.entry.clone)
           FileSystem.delete(path)
         else
-          raise Errno::ENOENT, src
+          raise Errno::ENOENT, path
         end
       end
     end
